@@ -79,7 +79,7 @@ public class HomeScope implements Serializable {
     /**
      * Main method to synchronize selection state in the whole tree.
      * <br><br>
-     * Skips processing of the root node, starts with its children. Reason:
+     * All methods used inside skip processing of the root node. Reason:
      * <br>
      * - root node is virtual and not rendered by primefaces, therefore it's state is not visible,
      * <br>
@@ -91,8 +91,9 @@ public class HomeScope implements Serializable {
      */
     private void syncSelection(TreeNode<Item> node, boolean selected) {
         List<Item> nestedItems = getNestedItems(node);
-        root.getChildren().forEach(child -> updateNodeSelection(child, nestedItems, selected));
-        root.getChildren().forEach(this::selectParentsAndDisableChildren);
+        updateNodeSelection(root, nestedItems, selected);
+        selectParentsAndDisableChildren(root);
+        updateCurrentlySelectedItems(); // this is needed to avoid sync issues with Primefaces treeTable component
     }
 
     /**
@@ -118,6 +119,8 @@ public class HomeScope implements Serializable {
      * Traverses the tree recursively to determine which node should be selected.
      * <br><br>
      * For unselect to work, the processing is done from the top of the tree down, otherwise parent nodes will block their children from unselecting.
+     * <br><br>
+     * Skips processing of the root node.
      *
      * @param node        this node and all nested children will be processed
      * @param itemsToSync if any processed node equals to any node in this list, it's a candidate for an update
@@ -130,10 +133,14 @@ public class HomeScope implements Serializable {
         Item item = node.getData();
 
         // Update the node's state first...
-        if (itemsToSync.contains(item))
-            // If you want to select the node, go ahead.
-            // If you want to unselect the node, ask the parent for permission, because a node can't be unselected if its parent is selected.
-            node.setSelected(selected || isParentSelected(node));
+        if (!node.equals(root) && itemsToSync.contains(item)) {
+            if (selected) {
+                node.setSelected(true);
+            } else {
+                node.setSelected(isParentSelected(node));
+                node.setSelectable(true);
+            }
+        }
 
         // ...then travel down the tree
         node.getChildren().forEach(child -> updateNodeSelection(child, itemsToSync, selected));
@@ -149,27 +156,76 @@ public class HomeScope implements Serializable {
      * <br><br>
      * The processing is done from the bottom of the tree up, because children need to be processed first, as parent's state depends on children's
      * state.
+     * <br><br>
+     * Skips processing of the root node.
      */
     private void selectParentsAndDisableChildren(TreeNode<Item> node) {
         if (node == null)
             return;
 
-        List<TreeNode<Item>> children = node.getChildren();
-
         // Travel down the tree first...
-        children.forEach(this::selectParentsAndDisableChildren);
+        node.getChildren().forEach(this::selectParentsAndDisableChildren);
 
         // ...then update the parent's and its children's state on the way up
-        if (areAllChildrenSelected(node)) {
-            node.setSelected(true);
-            children.forEach(child -> child.setSelectable(false));
-        } else {
-            children.forEach(child -> child.setSelectable(true));
+        if (!node.equals(root) && areAllChildrenSelected(node)) {
+            node.setSelected(true); // select parent
+            selectAndDisableAllChildren(node);
         }
     }
 
     private boolean areAllChildrenSelected(TreeNode<Item> parent) {
         List<TreeNode<Item>> children = parent.getChildren();
         return !children.isEmpty() && children.stream().allMatch(TreeNode::isSelected);
+    }
+
+
+    private void selectAndDisableAllChildren(TreeNode<Item> parent) {
+        List<Item> nestedItems = getNestedItems(parent);
+        nestedItems.remove(parent.getData()); // exclude the parent
+        selectAndDisableNodes(root, nestedItems);
+    }
+
+    /**
+     * Selects and disables all children if they are equal to any item in items to sync list.
+     * <br><br>
+     * Skips processing of the root node.
+     */
+    private void selectAndDisableNodes(TreeNode<Item> node, List<Item> itemsToSync) {
+        if (node == null)
+            return;
+
+        Item item = node.getData();
+        List<TreeNode<Item>> children = node.getChildren();
+
+        // Update the node's state first...
+        if (!node.equals(root) && itemsToSync.contains(item)) {
+            node.setSelected(true);
+            node.setSelectable(false);
+        }
+
+        // ...then travel down the tree
+        children.forEach(child -> selectAndDisableNodes(child, itemsToSync));
+    }
+
+    /**
+     * Sync the UI displayed by Primefaces treeTable component with the actual tree state, represented by the root node.
+     */
+    private void updateCurrentlySelectedItems() {
+        currentlySelectedItems.clear();
+        currentlySelectedItems = collectSelectedNodes(root);
+    }
+
+    private List<TreeNode<Item>> collectSelectedNodes(TreeNode<Item> node) {
+        List<TreeNode<Item>> accumulatedNodes = new ArrayList<>();
+
+        if (node == null)
+            return accumulatedNodes;
+
+        if (node.isSelected())
+            accumulatedNodes.add(node);
+
+        node.getChildren().forEach(child -> accumulatedNodes.addAll(collectSelectedNodes(child)));
+
+        return accumulatedNodes;
     }
 }
